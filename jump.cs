@@ -1,38 +1,44 @@
 using UnityEngine;
 
-public class PlayerJump : MonoBehaviour // Это скрипт для прыжков игрока. Он проверяет, находится ли игрок на земле, и позволяет ему прыгать при нажатии пробела.
+public class PlayerJump : MonoBehaviour
 {
-    public float jumpForce = 7f; // Сила прыжка
+    public float jumpForce = 7f;
+    public int maxJumps = 2;
 
-    private Rigidbody2D rb; // Ссылка на компонент Rigidbody2D
-    private bool isGrounded; // Флаг, указывающий, находится ли игрок на земле
+    private Rigidbody2D rb;
+    private int jumpCount;
+    private bool isGrounded;
 
     void Start()
     {
-        rb = GetComponent<Rigidbody2D>(); // Получаем компонент Rigidbody2D при старте игры
+        rb = GetComponent<Rigidbody2D>();
     }
 
     void Update()
     {
-        if (Input.GetKeyDown(KeyCode.Space) && isGrounded) // Проверяем, нажата ли клавиша пробела и находится ли игрок на земле
+        if (Input.GetKeyDown(KeyCode.Space) && jumpCount < maxJumps)
+{
+    float force = jumpCount == 0 ? jumpForce : jumpForce * 0.8f;
+
+    rb.linearVelocity = new Vector2(rb.linearVelocity.x, force);
+    jumpCount++;
+}
+    }
+
+    void OnCollisionEnter2D(Collision2D collision)
+    {
+        if (collision.gameObject.CompareTag("Ground"))
         {
-            rb.linearVelocity = new Vector2(rb.linearVelocity.x, jumpForce); // Устанавливаем вертикальную скорость для прыжка, сохраняя горизонтальную скорость
+            isGrounded = true;
+            jumpCount = 0;
         }
     }
 
-    void OnCollisionEnter2D(Collision2D collision) // Этот метод вызывается при столкновении с другим объектом
+    void OnCollisionExit2D(Collision2D collision)
     {
-        if (collision.gameObject.CompareTag("Ground")) // Проверяем, столкнулись ли мы с объектом, который имеет тег "Ground"
+        if (collision.gameObject.CompareTag("Ground"))
         {
-            isGrounded = true; //  Если да, то устанавливаем флаг isGrounded в true, что позволяет игроку прыгать снова
-        }
-    }
-
-    void OnCollisionExit2D(Collision2D collision) // Этот метод вызывается, когда мы перестаем сталкиваться с другим объектом
-    {
-        if (collision.gameObject.CompareTag("Ground")) // Проверяем, перестали ли мы сталкиваться с объектом, который имеет тег "Ground"
-        {
-            isGrounded = false; // Если да, то устанавливаем флаг isGrounded в false, что не позволяет игроку прыгать, пока он не вернется на землю
+            isGrounded = false;
         }
     }
 }
