@@ -23,26 +23,55 @@ public class movePlayer : MonoBehaviour
     [SerializeField] private float dashSpeed = 20f;
     [SerializeField] private float dashDuration = 0.15f;
     [SerializeField] private float dashCooldown = 1f;
-    [SerializeField] private LayerMask wallLayer;
-    [SerializeField] private float wallCheckDistance = 0.6f;
 
     [Header("Wall Movement")]
+    [SerializeField] private LayerMask wallLayer;
+    [SerializeField] private float wallCheckDistance = 0.6f;
     [SerializeField] private float wallSlideSpeed = 2.5f;
     [SerializeField] private float wallJumpHorizontalForce = 6f;
     [SerializeField] private float wallJumpVerticalForce = 8f;
     [SerializeField] private float wallJumpControlLockTime = 0.12f;
 
+    [Header("Jetpack")]
+    [SerializeField] private bool hasJetpack;
+    [SerializeField] private float jetpackForce = 20f;
+    [SerializeField] private float jetpackMaxRiseSpeed = 6.5f;
+    [SerializeField] private bool useJetpackFuel = false;
+    [SerializeField] private float maxJetpackFuel = 100f;
+    [SerializeField] private float startingJetpackFuel = 100f;
+    [SerializeField] private float jetpackFuelDrainPerSecond = 20f;
+    [SerializeField] private bool refillFuelOnPickup = true;
+
+    [Header("Jetpack Pickup")]
+    [SerializeField] private string jetpackPickupTag = "JetpackPickup";
+
+    [Header("Animation")]
+    [SerializeField] private Animator animator;
+    [SerializeField] private float runAnimationThreshold = 0.1f;
+    [SerializeField] private float fallAnimationThreshold = -0.1f;
+
     [Header("Effects")]
     [SerializeField] private TrailRenderer trail;
     [SerializeField] private ParticleSystem dashParticles;
+
+    private static readonly int IsRunningHash = Animator.StringToHash("isRunning");
+    private static readonly int IsJumpingHash = Animator.StringToHash("isJumping");
+    private static readonly int IsFallingHash = Animator.StringToHash("isFalling");
+    private static readonly int IsDoubleJumpingHash = Animator.StringToHash("isDoubleJumping");
+    private static readonly int IsWallSlidingHash = Animator.StringToHash("isWallSliding");
+    private static readonly int IsWallJumpingHash = Animator.StringToHash("isWallJumping");
+    private static readonly int IsJetpackingHash = Animator.StringToHash("isJetpacking");
+    private static readonly int SpeedHash = Animator.StringToHash("speed");
 
     private readonly List<float> lowGravityMultipliers = new List<float>();
 
     private Rigidbody2D rb;
     private float defaultGravityScale;
+    private float currentJetpackFuel;
 
     private float horizontalInput;
     private bool jumpPressed;
+    private bool jumpHeld;
     private bool dashPressed;
     private bool dashQueued;
 
@@ -61,16 +90,29 @@ public class movePlayer : MonoBehaviour
 
     private bool isTouchingWall;
     private bool isWallSliding;
+    private bool isWallJumping;
     private int wallDirection;
     private float wallJumpControlLockTimer;
 
+    private bool isJetpacking;
+    private bool isDoubleJumping;
     private bool facingRight = true;
+
+    public bool HasJetpack => hasJetpack;
+    public float CurrentJetpackFuel => useJetpackFuel ? currentJetpackFuel : maxJetpackFuel;
 
     private void Awake()
     {
         rb = GetComponent<Rigidbody2D>();
+        animator = animator != null ? animator : GetComponent<Animator>();
+
         defaultGravityScale = Mathf.Max(0f, rb.gravityScale);
+        currentJetpackFuel = hasJetpack && useJetpackFuel
+            ? Mathf.Clamp(startingJetpackFuel, 0f, maxJetpackFuel)
+            : 0f;
+
         ApplyGravityScale();
+        UpdateAnimatorParameters();
     }
 
     private void Update()
@@ -80,6 +122,7 @@ public class movePlayer : MonoBehaviour
         UpdateWallState();
         UpdateTimers();
         HandleFlip();
+        UpdateAnimatorParameters();
     }
 
     private void FixedUpdate()
@@ -93,6 +136,7 @@ public class movePlayer : MonoBehaviour
         HandleMovement();
         HandleWallSlide();
         HandleJump();
+        HandleJetpack();
         HandleDashStart();
         dashQueued = false;
     }
@@ -118,10 +162,45 @@ public class movePlayer : MonoBehaviour
         ApplyGravityScale();
     }
 
+    public void CollectJetpack()
+    {
+        bool alreadyHadJetpack = hasJetpack;
+        hasJetpack = true;
+
+        if (!useJetpackFuel)
+        {
+            return;
+        }
+
+        if (!alreadyHadJetpack)
+        {
+            currentJetpackFuel = refillFuelOnPickup
+                ? maxJetpackFuel
+                : Mathf.Clamp(startingJetpackFuel, 0f, maxJetpackFuel);
+            return;
+        }
+
+        if (refillFuelOnPickup)
+        {
+            currentJetpackFuel = maxJetpackFuel;
+        }
+    }
+
+    public void RefillJetpackFuel(float amount)
+    {
+        if (!useJetpackFuel || amount <= 0f)
+        {
+            return;
+        }
+
+        currentJetpackFuel = Mathf.Clamp(currentJetpackFuel + amount, 0f, maxJetpackFuel);
+    }
+
     private void ReadInput()
     {
         horizontalInput = Mathf.Clamp(Input.GetAxisRaw("Horizontal"), -1f, 1f);
         jumpPressed = Input.GetKeyDown(KeyCode.Space);
+        jumpHeld = Input.GetKey(KeyCode.Space);
         dashPressed = Input.GetKeyDown(KeyCode.LeftShift);
 
         if (jumpPressed)
@@ -140,15 +219,20 @@ public class movePlayer : MonoBehaviour
         wasGrounded = isGrounded;
         isGrounded = groundCheckPoint != null && Physics2D.OverlapCircle(groundCheckPoint.position, groundCheckRadius, groundLayer);
 
-        if (isGrounded)
+        if (!isGrounded)
         {
-            coyoteTimer = coyoteTime;
+            return;
+        }
 
-            if (!wasGrounded)
-            {
-                jumpsUsed = 0;
-                wallJumpControlLockTimer = 0f;
-            }
+        coyoteTimer = coyoteTime;
+
+        if (!wasGrounded)
+        {
+            jumpsUsed = 0;
+            wallJumpControlLockTimer = 0f;
+            isWallJumping = false;
+            isDoubleJumping = false;
+            isJetpacking = false;
         }
     }
 
@@ -171,7 +255,7 @@ public class movePlayer : MonoBehaviour
         }
 
         isTouchingWall = wallDirection != 0;
-        isWallSliding = !isGrounded && !isDashing && isTouchingWall && rb.linearVelocity.y < 0f;
+        isWallSliding = !isGrounded && !isDashing && !isJetpacking && isTouchingWall && rb.linearVelocity.y < 0f;
     }
 
     private void UpdateTimers()
@@ -199,6 +283,11 @@ public class movePlayer : MonoBehaviour
         if (wallJumpControlLockTimer > 0f)
         {
             wallJumpControlLockTimer = Mathf.Max(0f, wallJumpControlLockTimer - Time.deltaTime);
+            isWallJumping = wallJumpControlLockTimer > 0f;
+        }
+        else if (!isGrounded)
+        {
+            isWallJumping = false;
         }
     }
 
@@ -255,6 +344,9 @@ public class movePlayer : MonoBehaviour
         jumpBufferTimer = 0f;
         coyoteTimer = 0f;
         isWallSliding = false;
+        isJetpacking = false;
+        isWallJumping = false;
+        isDoubleJumping = jumpsUsed > 1;
     }
 
     private bool TryWallJump()
@@ -272,6 +364,9 @@ public class movePlayer : MonoBehaviour
         jumpBufferTimer = 0f;
         coyoteTimer = 0f;
         isWallSliding = false;
+        isWallJumping = true;
+        isDoubleJumping = false;
+        isJetpacking = false;
 
         if (jumpDirection > 0 && !facingRight)
         {
@@ -283,6 +378,55 @@ public class movePlayer : MonoBehaviour
         }
 
         return true;
+    }
+
+    private void HandleJetpack()
+    {
+        if (!CanUseJetpack())
+        {
+            isJetpacking = false;
+            return;
+        }
+
+        isJetpacking = true;
+        isWallSliding = false;
+        isWallJumping = false;
+
+        if (useJetpackFuel)
+        {
+            currentJetpackFuel = Mathf.Max(0f, currentJetpackFuel - jetpackFuelDrainPerSecond * Time.fixedDeltaTime);
+
+            if (currentJetpackFuel <= 0f)
+            {
+                isJetpacking = false;
+                return;
+            }
+        }
+
+        if (rb.linearVelocity.y < jetpackMaxRiseSpeed)
+        {
+            rb.AddForce(Vector2.up * jetpackForce, ForceMode2D.Force);
+        }
+
+        if (rb.linearVelocity.y > jetpackMaxRiseSpeed)
+        {
+            rb.linearVelocity = new Vector2(rb.linearVelocity.x, jetpackMaxRiseSpeed);
+        }
+    }
+
+    private bool CanUseJetpack()
+    {
+        if (!hasJetpack || !jumpHeld || isGrounded || isDashing)
+        {
+            return false;
+        }
+
+        if (!useJetpackFuel)
+        {
+            return true;
+        }
+
+        return currentJetpackFuel > 0f;
     }
 
     private void HandleDashStart()
@@ -306,6 +450,7 @@ public class movePlayer : MonoBehaviour
     private void StartDash()
     {
         isDashing = true;
+        isJetpacking = false;
         canDash = false;
         dashTimer = dashDuration;
         dashCooldownTimer = dashCooldown;
@@ -382,6 +527,34 @@ public class movePlayer : MonoBehaviour
         transform.localScale = scale;
     }
 
+    private void UpdateAnimatorParameters()
+    {
+        if (animator == null || rb == null)
+        {
+            return;
+        }
+
+        float horizontalSpeed = Mathf.Abs(rb.linearVelocity.x);
+        float verticalSpeed = rb.linearVelocity.y;
+
+        bool running = isGrounded && horizontalSpeed > runAnimationThreshold;
+        bool wallSlidingState = isWallSliding && !isJetpacking;
+        bool wallJumpingState = isWallJumping && !isGrounded;
+        bool doubleJumpingState = isDoubleJumping && !isGrounded && !wallJumpingState;
+        bool jetpackingState = isJetpacking && !isGrounded;
+        bool jumpingState = !isGrounded && verticalSpeed > 0.05f && !doubleJumpingState && !wallJumpingState && !jetpackingState;
+        bool fallingState = !isGrounded && verticalSpeed < fallAnimationThreshold && !wallSlidingState;
+
+        animator.SetBool(IsRunningHash, running);
+        animator.SetBool(IsJumpingHash, jumpingState);
+        animator.SetBool(IsFallingHash, fallingState);
+        animator.SetBool(IsDoubleJumpingHash, doubleJumpingState);
+        animator.SetBool(IsWallSlidingHash, wallSlidingState);
+        animator.SetBool(IsWallJumpingHash, wallJumpingState);
+        animator.SetBool(IsJetpackingHash, jetpackingState);
+        animator.SetFloat(SpeedHash, horizontalSpeed);
+    }
+
     private float GetGravityMultiplier()
     {
         float gravityMultiplier = 1f;
@@ -409,6 +582,17 @@ public class movePlayer : MonoBehaviour
         rb.gravityScale = isDashing ? 0f : defaultGravityScale * GetGravityMultiplier();
     }
 
+    private void OnTriggerEnter2D(Collider2D other)
+    {
+        if (other == null || other.gameObject.tag != jetpackPickupTag)
+        {
+            return;
+        }
+
+        CollectJetpack();
+        Destroy(other.gameObject);
+    }
+
     private void OnValidate()
     {
         moveSpeed = Mathf.Max(0f, moveSpeed);
@@ -426,6 +610,13 @@ public class movePlayer : MonoBehaviour
         wallJumpHorizontalForce = Mathf.Max(0f, wallJumpHorizontalForce);
         wallJumpVerticalForce = Mathf.Max(0f, wallJumpVerticalForce);
         wallJumpControlLockTime = Mathf.Max(0f, wallJumpControlLockTime);
+        jetpackForce = Mathf.Max(0f, jetpackForce);
+        jetpackMaxRiseSpeed = Mathf.Max(0f, jetpackMaxRiseSpeed);
+        maxJetpackFuel = Mathf.Max(0f, maxJetpackFuel);
+        startingJetpackFuel = Mathf.Clamp(startingJetpackFuel, 0f, maxJetpackFuel);
+        jetpackFuelDrainPerSecond = Mathf.Max(0f, jetpackFuelDrainPerSecond);
+        runAnimationThreshold = Mathf.Max(0f, runAnimationThreshold);
+        fallAnimationThreshold = Mathf.Min(0f, fallAnimationThreshold);
     }
 
     private void OnDrawGizmosSelected()
